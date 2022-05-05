@@ -20,6 +20,7 @@
 
           buildInputs = with pkgs; [
             terraform
+            tfsec
             google-cloud-sdk
             kubectl
             kubernetes-helm
