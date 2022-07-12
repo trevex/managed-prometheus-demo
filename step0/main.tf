@@ -65,10 +65,9 @@ resource "google_container_cluster" "cluster" {
   initial_node_count        = 1
   default_max_pods_per_node = 110
 
-  network           = google_compute_network.cluster.id
-  subnetwork        = google_compute_subnetwork.cluster.id
-  networking_mode   = "VPC_NATIVE"
-  datapath_provider = "ADVANCED_DATAPATH" # Dataplane V2
+  network         = google_compute_network.cluster.id
+  subnetwork      = google_compute_subnetwork.cluster.id
+  networking_mode = "VPC_NATIVE"
 
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
@@ -97,9 +96,8 @@ resource "google_container_cluster" "cluster" {
   }
 
   pod_security_policy_config {
-    enabled = true
+    enabled = false # intentionally for simplicity set to false (this is a demo)
   }
-
 
   workload_identity_config {
     workload_pool = "${var.project}.svc.id.goog"
@@ -118,6 +116,13 @@ resource "google_container_cluster" "cluster" {
     update = "45m"
     delete = "45m"
   }
+}
+
+# Let's create a container registry
+
+resource "google_container_registry" "registry" {
+  project  = var.project
+  location = "EU"
 }
 
 # We need to properly setup the service account for our nodes to write logs, metrics etc.
@@ -152,7 +157,17 @@ resource "google_project_iam_member" "node_metadata_writer" {
   member  = "serviceAccount:${google_service_account.node.email}"
 }
 
+resource "google_storage_bucket_iam_member" "node_pull_gcr" {
+  bucket = google_container_registry.registry.id
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.node.email}"
+}
+
 # Finally we create our private nodes
+
+locals {
+  node_network_tag = "cluster"
+}
 
 resource "google_container_node_pool" "default" {
   provider = google-beta
@@ -180,9 +195,10 @@ resource "google_container_node_pool" "default" {
   }
 
   node_config {
-    image_type   = "COS"
+    image_type   = "COS_CONTAINERD"
     machine_type = "n1-standard-2"
     preemptible  = false
+    tags         = [local.node_network_tag]
 
     metadata = {
       "disable-legacy-endpoints" = true
@@ -204,7 +220,8 @@ resource "google_container_node_pool" "default" {
     }
 
     oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform"
+      "https://www.googleapis.com/auth/cloud-platform",
+      "https://www.googleapis.com/auth/monitoring"
     ]
   }
 
@@ -218,4 +235,21 @@ resource "google_container_node_pool" "default" {
     update = "45m"
     delete = "45m"
   }
+}
+
+# For the GMP admission controller we need to allow ingress on 8443
+
+resource "google_compute_firewall" "admission" {
+  project     = var.project
+  name        = "allow-gke-cp-access-admission-controller"
+  network     = google_compute_network.cluster.id
+  description = "Allow ingress on 8443 from GKE Control-Plane"
+
+  allow {
+    protocol = "tcp"
+    # ports    = ["8443"]
+  }
+
+  source_ranges = [google_container_cluster.cluster.private_cluster_config[0].master_ipv4_cidr_block]
+  target_tags   = [local.node_network_tag]
 }

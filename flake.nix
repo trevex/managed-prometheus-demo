@@ -24,6 +24,7 @@
             google-cloud-sdk
             kubectl
             kubernetes-helm
+            go
           ];
         };
       }
